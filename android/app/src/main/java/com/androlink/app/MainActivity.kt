@@ -261,10 +261,10 @@ fun MaterialYouScreen() {
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Ascii,
-                            imeAction = ImeAction.Connect
+                            imeAction = ImeAction.Done
                         ),
                         keyboardActions = KeyboardActions(
-                            onConnect = {
+                            onDone = {
                                 focusManager.clearFocus()
                                 if (pcIpInput.isNotBlank()) {
                                     val intent = Intent(context, AndrolinkForegroundService::class.java)
