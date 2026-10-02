@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Androlink</string>
+    <string name="notification_service_name">Androlink Notification Sync</string>
+    <string name="service_running">Androlink is connected and syncing with your PC</string>
+</resources>
