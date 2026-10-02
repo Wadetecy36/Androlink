@@ -36,6 +36,8 @@ export default function App() {
   const [lastClipboard, setLastClipboard] = useState("Nothing copied yet");
   const [clipInput, setClipInput] = useState("");
   const [notifications, setNotifications] = useState<NotificationData[]>([]);
+  const [laptopIp, setLaptopIp] = useState("127.0.0.1");
+  const [gatewayIp, setGatewayIp] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -53,6 +55,8 @@ export default function App() {
         if (msg.type === "state") {
           setIsConnected(msg.data.isConnected);
           if (msg.data.lastClipboard) setLastClipboard(msg.data.lastClipboard);
+          if (msg.data.localIp) setLaptopIp(msg.data.localIp);
+          if (msg.data.gatewayIp) setGatewayIp(msg.data.gatewayIp);
         } else if (msg.type === "androlink:device_connected") {
           setIsConnected(true);
         } else if (msg.type === "androlink:device_disconnected") {
@@ -113,6 +117,11 @@ export default function App() {
               {battery.isCharging ? <BatteryCharging size={16} color="#4ade80" /> : <Battery size={16} />}
               {battery.level}%
             </span>
+          </div>
+
+          <div style={{ marginTop: 6, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 12 }}>
+            <div style={{ color: "#818cf8", fontWeight: 600 }}>PC IP: {laptopIp}:8700</div>
+            {gatewayIp && <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>Phone Hotspot: {gatewayIp}</div>}
           </div>
         </div>
 

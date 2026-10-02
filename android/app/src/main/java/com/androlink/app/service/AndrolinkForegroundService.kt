@@ -14,12 +14,12 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.androlink.app.MainActivity
 import com.androlink.app.model.AndrolinkPacket
 import com.androlink.app.network.TcpClient
 import com.androlink.app.network.UdpDiscovery
-import com.google.gson.Gson
 import com.google.gson.JsonObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,12 +28,13 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.net.InetAddress
+import java.net.NetworkInterface
 
 class AndrolinkForegroundService : Service() {
+    private val TAG = "AndrolinkService"
     private val CHANNEL_ID = "androlink_service_channel"
     private val NOTIFICATION_ID = 1001
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val gson = Gson()
 
     private var udpDiscovery: UdpDiscovery? = null
     private var tcpClient: TcpClient? = null
@@ -45,11 +46,30 @@ class AndrolinkForegroundService : Service() {
         var isRunning = false
         var isConnected = false
         var currentPeerName = "None"
+        var serviceInstance: AndrolinkForegroundService? = null
         var onStateChanged: (() -> Unit)? = null
+
+        fun getLocalIpAddress(): String {
+            try {
+                val interfaces = NetworkInterface.getNetworkInterfaces()
+                while (interfaces.hasMoreElements()) {
+                    val ni = interfaces.nextElement()
+                    if (ni.isLoopback || !ni.isUp) continue
+                    for (ia in ni.interfaceAddresses) {
+                        val addr = ia.address
+                        if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                            return addr.hostAddress ?: ""
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+            return "Unknown"
+        }
     }
 
     override fun onCreate() {
         super.onCreate()
+        serviceInstance = this
         deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "android-device"
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildForegroundNotification("Discovering desktop..."))
@@ -62,6 +82,22 @@ class AndrolinkForegroundService : Service() {
         startDiscovery()
     }
 
+    fun connectDirectly(ip: String, port: Int = 8700) {
+        val prefs = getSharedPreferences("androlink_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("last_ip", ip).apply()
+
+        scope.launch {
+            try {
+                updateNotification("Connecting directly to $ip...")
+                val address = InetAddress.getByName(ip)
+                connectToDesktop(address, port)
+            } catch (e: Exception) {
+                Log.e(TAG, "Direct connect failed to $ip", e)
+                updateNotification("Connection to $ip failed. Searching...")
+            }
+        }
+    }
+
     private fun startDiscovery() {
         tcpClient = TcpClient(
             onPacketReceived = { packet -> handleIncomingPacket(packet) },
@@ -70,6 +106,8 @@ class AndrolinkForegroundService : Service() {
                 if (!connected) {
                     currentPeerName = "None"
                     updateNotification("Disconnected. Searching for desktop...")
+                } else {
+                    updateNotification("Connected to $currentPeerName")
                 }
                 onStateChanged?.invoke()
             }
@@ -89,11 +127,23 @@ class AndrolinkForegroundService : Service() {
             udpDiscovery?.startListening()
         }
 
-        // Periodically broadcast presence
+        // Periodically broadcast presence & try saved IP if not connected
         scope.launch {
+            val prefs = getSharedPreferences("androlink_prefs", Context.MODE_PRIVATE)
+            var attempts = 0
             while (isRunning) {
                 if (!isConnected) {
-                    udpDiscovery?.broadcastPresence()
+                    val savedIp = prefs.getString("last_ip", null)
+                    udpDiscovery?.broadcastPresence(8700, savedIp)
+
+                    attempts++
+                    if (attempts % 4 == 0 && !savedIp.isNullOrBlank()) {
+                        // Attempt proactive TCP connection to last saved IP in case hotspot drops UDP
+                        try {
+                            val addr = InetAddress.getByName(savedIp)
+                            connectToDesktop(addr, 8700)
+                        } catch (_: Exception) {}
+                    }
                 }
                 delay(3000)
             }
@@ -252,6 +302,7 @@ class AndrolinkForegroundService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        serviceInstance = null
         isRunning = false
         isConnected = false
         onStateChanged?.invoke()

@@ -14,9 +14,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -26,7 +27,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -56,7 +60,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MaterialYouScreen() {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
+    val prefs = remember { context.getSharedPreferences("androlink_prefs", Context.MODE_PRIVATE) }
+    var pcIpInput by remember { mutableStateOf(prefs.getString("last_ip", "") ?: "") }
+    var phoneIp by remember { mutableStateOf(AndrolinkForegroundService.getLocalIpAddress()) }
 
     var isRunning by remember { mutableStateOf(AndrolinkForegroundService.isRunning) }
     var isConnected by remember { mutableStateOf(AndrolinkForegroundService.isConnected) }
@@ -72,6 +81,7 @@ fun MaterialYouScreen() {
             isRunning = AndrolinkForegroundService.isRunning
             isConnected = AndrolinkForegroundService.isConnected
             peerName = AndrolinkForegroundService.currentPeerName
+            phoneIp = AndrolinkForegroundService.getLocalIpAddress()
         }
         onDispose {
             AndrolinkForegroundService.onStateChanged = null
@@ -115,7 +125,7 @@ fun MaterialYouScreen() {
         ) {
             Spacer(modifier = Modifier.height(4.dp))
 
-            // 1. Connection Status Card (Material You Expressive Card)
+            // 1. Connection Status Card
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(28.dp),
@@ -167,7 +177,7 @@ fun MaterialYouScreen() {
                                 else MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = if (isConnected) peerName else "Local Wi-Fi discovery active",
+                                text = if (isConnected) peerName else "This device: $phoneIp",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = if (isConnected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                                 else MaterialTheme.colorScheme.onSurfaceVariant
@@ -175,7 +185,7 @@ fun MaterialYouScreen() {
                         }
                     }
 
-                    // Action Button inside Card
+                    // Start/Stop Service Toggle Button
                     Button(
                         onClick = {
                             val intent = Intent(context, AndrolinkForegroundService::class.java)
@@ -201,14 +211,92 @@ fun MaterialYouScreen() {
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (isRunning) "Disconnect & Stop" else "Start Linking",
+                            text = if (isRunning) "Disconnect & Stop" else "Start Auto-Discovery",
                             fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
             }
 
-            // 2. Permission Banner (Material 3 Outlined Card)
+            // 2. Direct Connect / Hotspot Mode Card
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.WifiTethering,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Column {
+                            Text(
+                                text = "Hotspot / Direct IP Connect",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Use this if on mobile hotspot or router blocks UDP",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = pcIpInput,
+                        onValueChange = { pcIpInput = it.trim() },
+                        label = { Text("PC IP Address (e.g. 10.168.123.249)") },
+                        placeholder = { Text("Enter IP shown on laptop") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Ascii,
+                            imeAction = ImeAction.Connect
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onConnect = {
+                                focusManager.clearFocus()
+                                if (pcIpInput.isNotBlank()) {
+                                    val intent = Intent(context, AndrolinkForegroundService::class.java)
+                                    if (!isRunning) ContextCompat.startForegroundService(context, intent)
+                                    AndrolinkForegroundService.serviceInstance?.connectDirectly(pcIpInput)
+                                }
+                            }
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)
+                    )
+
+                    FilledTonalButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            if (pcIpInput.isNotBlank()) {
+                                val intent = Intent(context, AndrolinkForegroundService::class.java)
+                                if (!isRunning) ContextCompat.startForegroundService(context, intent)
+                                AndrolinkForegroundService.serviceInstance?.connectDirectly(pcIpInput)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Connect Directly to PC")
+                    }
+                }
+            }
+
+            // 3. Permission Banner
             AnimatedVisibility(visible = !hasNotifPermission) {
                 OutlinedCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -252,13 +340,13 @@ fun MaterialYouScreen() {
                 }
             }
 
-            // 3. Feature Preferences (Material You Settings Group)
+            // 4. Feature Preferences
             Text(
                 text = "Link Features",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+                modifier = Modifier.padding(start = 4.dp, top = 4.dp)
             )
 
             Card(
@@ -352,27 +440,6 @@ fun MaterialYouScreen() {
                         )
                     }
                 }
-            }
-
-            // 4. Quick Info Chip Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                SuggestionChip(
-                    onClick = { },
-                    label = { Text("UDP Port: 8699") },
-                    icon = { Icon(Icons.Outlined.Wifi, null, Modifier.size(16.dp)) },
-                    shape = RoundedCornerShape(12.dp)
-                )
-                SuggestionChip(
-                    onClick = { },
-                    label = { Text("TCP: 8700") },
-                    icon = { Icon(Icons.Outlined.Security, null, Modifier.size(16.dp)) },
-                    shape = RoundedCornerShape(12.dp)
-                )
             }
 
             Spacer(modifier = Modifier.height(20.dp))

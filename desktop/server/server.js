@@ -3,8 +3,9 @@ import net from 'node:net';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { exec, spawn } from 'node:child_process';
+import { exec, execSync, spawn } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -19,13 +20,47 @@ const DEVICE_ID = `androlink-win-${Math.random().toString(36).substring(2, 8)}`;
 
 console.log(`[Androlink] Starting Lightweight Desktop Host on ${DEVICE_NAME}...`);
 
+// Network Interface Detection
+function getNetworkDetails() {
+  let localIp = '127.0.0.1';
+  let gatewayIp = null;
+
+  try {
+    const out = execSync('route print 0.0.0.0').toString();
+    const match = out.match(/0\.0\.0\.0\s+0\.0\.0\.0\s+([0-9\.]+)\s+([0-9\.]+)/);
+    if (match) {
+      gatewayIp = match[1];
+      localIp = match[2];
+    }
+  } catch (e) {}
+
+  if (localIp === '127.0.0.1') {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          localIp = iface.address;
+          break;
+        }
+      }
+    }
+  }
+
+  const parts = localIp.split('.');
+  const subnetBroadcast = parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.255` : '255.255.255.255';
+  return { localIp, gatewayIp, subnetBroadcast };
+}
+
+const network = getNetworkDetails();
+console.log(`[Network] Active IP: ${network.localIp} | Hotspot/Gateway: ${network.gatewayIp || 'None'}`);
+
 // State
 let connectedPhoneSocket = null;
 let currentPhoneName = 'None';
 let lastClipboard = '';
 let isConnected = false;
 
-// 1. WebSocket Server for React Dashboard UI
+// 1. HTTP & WebSocket Server for React Dashboard UI
 const server = http.createServer((req, res) => {
   const distDir = path.join(__dirname, '..', 'dist');
   let reqPath = req.url === '/' ? '/index.html' : req.url;
@@ -43,7 +78,6 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
     fs.createReadStream(filePath).pipe(res);
   } else {
-    // SPA fallback
     const indexHtml = path.join(distDir, 'index.html');
     if (fs.existsSync(indexHtml)) {
       res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -61,13 +95,16 @@ const frontendClients = new Set();
 wss.on('connection', (ws) => {
   frontendClients.add(ws);
 
-  // Send current state
+  const netInfo = getNetworkDetails();
   ws.send(JSON.stringify({
     type: 'state',
     data: {
       isConnected,
       deviceName: currentPhoneName,
-      lastClipboard
+      lastClipboard,
+      localIp: netInfo.localIp,
+      gatewayIp: netInfo.gatewayIp,
+      tcpPort: TCP_PORT
     }
   }));
 
@@ -109,7 +146,7 @@ const tcpServer = net.createServer((socket) => {
   socket.on('data', (chunk) => {
     buffer += chunk.toString('utf8');
     const lines = buffer.split('\n');
-    buffer = lines.pop(); // keep remainder
+    buffer = lines.pop();
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -137,7 +174,7 @@ const tcpServer = net.createServer((socket) => {
 });
 
 tcpServer.listen(TCP_PORT, '0.0.0.0', () => {
-  console.log(`[TCP] Listening for phone on port ${TCP_PORT}`);
+  console.log(`[TCP] Listening for phone on 0.0.0.0:${TCP_PORT}`);
 });
 
 function handlePhonePacket(packet) {
@@ -197,7 +234,6 @@ function getWindowsClipboard(cb) {
   });
 }
 
-// Periodically monitor Windows clipboard to send changes to phone
 setInterval(() => {
   if (!isConnected || !connectedPhoneSocket) return;
   getWindowsClipboard((text) => {
@@ -234,15 +270,15 @@ function showWindowsToast(title, message) {
   exec(`powershell.exe -NoProfile -Command "${script.replace(/\r?\n/g, ' ')}"`, () => {});
 }
 
-// 5. UDP Discovery Broadcast & Listener
+// 5. Multi-Target UDP Discovery (Broadcast + Subnet Directed + Gateway Direct Unicast)
 const udpSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 
 udpSocket.on('listening', () => {
   udpSocket.setBroadcast(true);
   console.log(`[UDP] Discovery listening on port ${UDP_PORT}`);
 
-  // Broadcast presence every 3 seconds
   setInterval(() => {
+    const netInfo = getNetworkDetails();
     const beacon = JSON.stringify({
       protocol: 'androlink-v1',
       type: 'discovery',
@@ -253,9 +289,19 @@ udpSocket.on('listening', () => {
       version: '1.0.0'
     });
     const message = Buffer.from(beacon);
-    udpSocket.send(message, 0, message.length, UDP_PORT, '255.255.255.255', (err) => {
-      if (err) console.error('[UDP] Broadcast error:', err.message);
-    });
+
+    // 1. Global Broadcast
+    udpSocket.send(message, 0, message.length, UDP_PORT, '255.255.255.255', () => {});
+
+    // 2. Subnet Broadcast (e.g. 10.168.123.255)
+    if (netInfo.subnetBroadcast) {
+      udpSocket.send(message, 0, message.length, UDP_PORT, netInfo.subnetBroadcast, () => {});
+    }
+
+    // 3. Direct Unicast to Phone Hotspot Gateway (e.g. 10.168.123.154)
+    if (netInfo.gatewayIp && netInfo.gatewayIp !== '0.0.0.0') {
+      udpSocket.send(message, 0, message.length, UDP_PORT, netInfo.gatewayIp, () => {});
+    }
   }, 3000);
 });
 
@@ -275,7 +321,12 @@ udpSocket.bind(UDP_PORT);
 
 // Start HTTP Server
 server.listen(HTTP_PORT, () => {
+  const netInfo = getNetworkDetails();
   console.log(`\n=================================================`);
   console.log(`🚀 Androlink Desktop Dashboard: http://localhost:${HTTP_PORT}`);
+  console.log(`💻 Laptop IP: ${netInfo.localIp} (Port ${TCP_PORT})`);
+  if (netInfo.gatewayIp) {
+    console.log(`📱 Phone Hotspot IP: ${netInfo.gatewayIp}`);
+  }
   console.log(`=================================================\n`);
 });

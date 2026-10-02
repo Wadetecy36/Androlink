@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.net.SocketException
 
 class UdpDiscovery(
@@ -65,7 +66,7 @@ class UdpDiscovery(
         }
     }
 
-    suspend fun broadcastPresence(tcpPort: Int = 8700) = withContext(Dispatchers.IO) {
+    suspend fun broadcastPresence(tcpPort: Int = 8700, directIp: String? = null) = withContext(Dispatchers.IO) {
         try {
             val beacon = DiscoveryBeacon(
                 deviceId = deviceId,
@@ -75,16 +76,50 @@ class UdpDiscovery(
             )
             val json = gson.toJson(beacon)
             val data = json.toByteArray(Charsets.UTF_8)
-            val broadcastAddress = InetAddress.getByName("255.255.255.255")
+
+            val targets = getBroadcastAddresses().toMutableList()
+            if (!directIp.isNullOrBlank()) {
+                try {
+                    targets.add(InetAddress.getByName(directIp))
+                } catch (_: Exception) {}
+            }
 
             val broadcastSocket = DatagramSocket().apply { broadcast = true }
-            val packet = DatagramPacket(data, data.size, broadcastAddress, DISCOVERY_PORT)
-            broadcastSocket.send(packet)
+            for (target in targets) {
+                try {
+                    val packet = DatagramPacket(data, data.size, target, DISCOVERY_PORT)
+                    broadcastSocket.send(packet)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed sending to $target: ${e.message}")
+                }
+            }
             broadcastSocket.close()
-            Log.d(TAG, "Broadcasted presence to 255.255.255.255:$DISCOVERY_PORT")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to broadcast presence", e)
         }
+    }
+
+    private fun getBroadcastAddresses(): List<InetAddress> {
+        val list = mutableListOf<InetAddress>()
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val ni = interfaces.nextElement()
+                if (ni.isLoopback || !ni.isUp) continue
+                for (ia in ni.interfaceAddresses) {
+                    val bcast = ia.broadcast
+                    if (bcast != null && !list.contains(bcast)) {
+                        list.add(bcast)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading interface broadcasts", e)
+        }
+        try {
+            list.add(InetAddress.getByName("255.255.255.255"))
+        } catch (_: Exception) {}
+        return list
     }
 
     fun stop() {
