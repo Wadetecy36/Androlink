@@ -3,66 +3,69 @@ package com.androlink.app
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.androlink.app.service.AndrolinkForegroundService
-import com.androlink.app.service.NotificationListener
+import com.androlink.app.ui.theme.AndrolinkTheme
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Color(0xFF6366F1),
-                    background = Color(0xFF0F172A),
-                    surface = Color(0xFF1E293B),
-                    onBackground = Color(0xFFF8FAFC),
-                    onSurface = Color(0xFFF8FAFC)
-                )
-            ) {
+            AndrolinkTheme(dynamicColor = true) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MainScreen()
+                    MaterialYouScreen()
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen() {
+fun MaterialYouScreen() {
     val context = LocalContext.current
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
     var isRunning by remember { mutableStateOf(AndrolinkForegroundService.isRunning) }
     var isConnected by remember { mutableStateOf(AndrolinkForegroundService.isConnected) }
     var peerName by remember { mutableStateOf(AndrolinkForegroundService.currentPeerName) }
     var hasNotifPermission by remember { mutableStateOf(isNotificationServiceEnabled(context)) }
+
+    // Feature toggles
+    var clipboardSyncEnabled by remember { mutableStateOf(true) }
+    var notificationsEnabled by remember { mutableStateOf(true) }
 
     DisposableEffect(Unit) {
         AndrolinkForegroundService.onStateChanged = {
@@ -75,128 +78,304 @@ fun MainScreen() {
         }
     }
 
-    Column(
+    Scaffold(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(
-            text = "Androlink",
-            fontSize = 28.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Text(
-            text = "Seamless Android to Windows integration",
-            fontSize = 14.sp,
-            color = Color(0xFF94A3B8)
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Connection Status Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Computer,
-                        contentDescription = null,
-                        tint = if (isConnected) Color(0xFF22C55E) else Color(0xFF94A3B8),
-                        modifier = Modifier.size(32.dp)
-                    )
+            .nestedScroll(scrollBehavior.nestedScrollConnection),
+        topBar = {
+            LargeTopAppBar(
+                title = {
                     Column {
                         Text(
-                            text = if (isConnected) "Connected to PC" else if (isRunning) "Searching for PC..." else "Service Stopped",
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 16.sp
+                            text = "Androlink",
+                            fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = if (isConnected) peerName else "Make sure your PC and phone are on the same Wi-Fi",
-                            fontSize = 13.sp,
-                            color = Color(0xFF94A3B8)
+                            text = "Phone to PC integration",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                }
+                },
+                scrollBehavior = scrollBehavior,
+                colors = TopAppBarDefaults.largeTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
+                )
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 20.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Spacer(modifier = Modifier.height(4.dp))
 
-                Button(
-                    onClick = {
-                        val intent = Intent(context, AndrolinkForegroundService::class.java)
-                        if (isRunning) {
-                            context.stopService(intent)
-                        } else {
-                            ContextCompat.startForegroundService(context, intent)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isRunning) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary
-                    )
+            // 1. Connection Status Card (Material You Expressive Card)
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = if (isConnected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else if (isRunning) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    }
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.PowerSettingsNew,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(if (isRunning) "Stop Service" else "Start Service")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isConnected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.surfaceVariant
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isConnected) Icons.Default.Laptop else Icons.Default.Devices,
+                                contentDescription = null,
+                                tint = if (isConnected) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (isConnected) "Connected to PC"
+                                else if (isRunning) "Searching for PC..."
+                                else "Ready to Link",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isConnected) MaterialTheme.colorScheme.onPrimaryContainer
+                                else MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (isConnected) peerName else "Local Wi-Fi discovery active",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (isConnected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // Action Button inside Card
+                    Button(
+                        onClick = {
+                            val intent = Intent(context, AndrolinkForegroundService::class.java)
+                            if (isRunning) {
+                                context.stopService(intent)
+                            } else {
+                                ContextCompat.startForegroundService(context, intent)
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isRunning) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Icon(
+                            imageVector = if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isRunning) "Disconnect & Stop" else "Start Linking",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
             }
-        }
 
-        // Permissions Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Icon(
-                        imageVector = if (hasNotifPermission) Icons.Default.CheckCircle else Icons.Default.Notifications,
-                        contentDescription = null,
-                        tint = if (hasNotifPermission) Color(0xFF22C55E) else Color(0xFFEAB308)
+            // 2. Permission Banner (Material 3 Outlined Card)
+            AnimatedVisibility(visible = !hasNotifPermission) {
+                OutlinedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.outlinedCardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
                     )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(text = "Notification Access", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            text = if (hasNotifPermission) "Granted" else "Required to mirror notifications",
-                            fontSize = 12.sp,
-                            color = Color(0xFF94A3B8)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.NotificationsActive,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error
                         )
-                    }
-                    if (!hasNotifPermission) {
-                        OutlinedButton(
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Notification Access Required",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                text = "Grant permission to mirror incoming messages to your laptop.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        FilledTonalButton(
                             onClick = {
                                 context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                             },
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Grant", fontSize = 12.sp)
+                            Text("Enable")
                         }
                     }
                 }
             }
+
+            // 3. Feature Preferences (Material You Settings Group)
+            Text(
+                text = "Link Features",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+            )
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                    // Clipboard Toggle
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.ContentPaste,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                            Column {
+                                Text(
+                                    text = "Shared Clipboard",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "Auto-sync copied text between phone & PC",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = clipboardSyncEnabled,
+                            onCheckedChange = { clipboardSyncEnabled = it },
+                            thumbContent = if (clipboardSyncEnabled) {
+                                { Icon(Icons.Default.Check, null, Modifier.size(12.dp)) }
+                            } else null
+                        )
+                    }
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+
+                    // Notification Mirroring Toggle
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Notifications,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                            Column {
+                                Text(
+                                    text = "Mirror Notifications",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "Forward alerts to Windows notifications",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = notificationsEnabled,
+                            onCheckedChange = { notificationsEnabled = it },
+                            thumbContent = if (notificationsEnabled) {
+                                { Icon(Icons.Default.Check, null, Modifier.size(12.dp)) }
+                            } else null
+                        )
+                    }
+                }
+            }
+
+            // 4. Quick Info Chip Bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SuggestionChip(
+                    onClick = { },
+                    label = { Text("UDP Port: 8699") },
+                    icon = { Icon(Icons.Outlined.Wifi, null, Modifier.size(16.dp)) },
+                    shape = RoundedCornerShape(12.dp)
+                )
+                SuggestionChip(
+                    onClick = { },
+                    label = { Text("TCP: 8700") },
+                    icon = { Icon(Icons.Outlined.Security, null, Modifier.size(16.dp)) },
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
         }
     }
 }
