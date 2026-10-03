@@ -3,11 +3,16 @@ package com.androlink.app
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -36,6 +41,13 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.androlink.app.service.AndrolinkForegroundService
 import com.androlink.app.ui.theme.AndrolinkTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
 class MainActivity : ComponentActivity() {
 
@@ -72,9 +84,15 @@ fun MaterialYouScreen() {
     var peerName by remember { mutableStateOf(AndrolinkForegroundService.currentPeerName) }
     var hasNotifPermission by remember { mutableStateOf(isNotificationServiceEnabled(context)) }
 
-    // Feature toggles
-    var clipboardSyncEnabled by remember { mutableStateOf(true) }
-    var notificationsEnabled by remember { mutableStateOf(true) }
+    // File picker launcher
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val targetIp = pcIpInput.ifBlank { "10.168.123.249" }
+            uploadFileToPc(context, uri, targetIp)
+        }
+    }
 
     DisposableEffect(Unit) {
         AndrolinkForegroundService.onStateChanged = {
@@ -246,7 +264,7 @@ fun MaterialYouScreen() {
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Use this if on mobile hotspot or router blocks UDP",
+                                text = "Direct TCP connection over Hotspot",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -296,7 +314,62 @@ fun MaterialYouScreen() {
                 }
             }
 
-            // 3. Permission Banner
+            // 3. Quick Action Tools (KDE Connect Plugin Toolkit)
+            Text(
+                text = "Quick Tools",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Send File Button
+                ElevatedCard(
+                    onClick = { filePickerLauncher.launch("*/*") },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Outlined.UploadFile, null, tint = MaterialTheme.colorScheme.primary)
+                        Text("Send File", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("Beam directly to PC Downloads", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+
+                // Ping Laptop Button
+                ElevatedCard(
+                    onClick = {
+                        AndrolinkForegroundService.serviceInstance?.pingLaptop()
+                        Toast.makeText(context, "Ping sent to Laptop!", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Outlined.NotificationsActive, null, tint = MaterialTheme.colorScheme.secondary)
+                        Text("Ping Laptop", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("Chimes your PC if lost", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+
+            // 4. Permissions Alert
             AnimatedVisibility(visible = !hasNotifPermission) {
                 OutlinedCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -340,109 +413,50 @@ fun MaterialYouScreen() {
                 }
             }
 
-            // 4. Feature Preferences
-            Text(
-                text = "Link Features",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 4.dp, top = 4.dp)
-            )
+            Spacer(modifier = Modifier.height(20.dp))
+        }
+    }
+}
 
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer
-                )
-            ) {
-                Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                    // Clipboard Toggle
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.ContentPaste,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurface
-                            )
-                            Column {
-                                Text(
-                                    text = "Shared Clipboard",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    text = "Auto-sync copied text between phone & PC",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                        Switch(
-                            checked = clipboardSyncEnabled,
-                            onCheckedChange = { clipboardSyncEnabled = it },
-                            thumbContent = if (clipboardSyncEnabled) {
-                                { Icon(Icons.Default.Check, null, Modifier.size(12.dp)) }
-                            } else null
-                        )
-                    }
-
-                    HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 20.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
-
-                    // Notification Mirroring Toggle
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Notifications,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurface
-                            )
-                            Column {
-                                Text(
-                                    text = "Mirror Notifications",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    text = "Forward alerts to Windows notifications",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                        Switch(
-                            checked = notificationsEnabled,
-                            onCheckedChange = { notificationsEnabled = it },
-                            thumbContent = if (notificationsEnabled) {
-                                { Icon(Icons.Default.Check, null, Modifier.size(12.dp)) }
-                            } else null
-                        )
-                    }
+private fun uploadFileToPc(context: Context, uri: Uri, pcIp: String) {
+    CoroutineScope(Dispatchers.IO).launch {
+        try {
+            val contentResolver = context.contentResolver
+            var fileName = "upload-${System.currentTimeMillis()}"
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex != -1 && cursor.moveToFirst()) {
+                    fileName = cursor.getString(nameIndex)
                 }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            val url = URL("http://$pcIp:8702/api/upload")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.doOutput = true
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("X-Filename", URLEncoder.encode(fileName, "UTF-8"))
+            conn.setRequestProperty("X-Source", "phone")
+            conn.setRequestProperty("Content-Type", "application/octet-stream")
+            conn.setChunkedStreamingMode(8192)
+
+            contentResolver.openInputStream(uri)?.use { input ->
+                conn.outputStream.use { output ->
+                    input.copyTo(output)
+                }
+            }
+
+            val responseCode = conn.responseCode
+            withContext(Dispatchers.Main) {
+                if (responseCode == 200) {
+                    Toast.makeText(context, "File sent to PC Downloads!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Upload failed: $responseCode", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Error sending file: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 }

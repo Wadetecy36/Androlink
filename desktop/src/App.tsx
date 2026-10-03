@@ -8,7 +8,6 @@ import {
   Send,
   FolderSync,
   MonitorPlay,
-  Music,
   Check,
   Copy,
   Zap,
@@ -17,6 +16,8 @@ import {
   Share2,
   Layers,
   ArrowRight,
+  Volume2,
+  Upload,
 } from "lucide-react";
 import "./App.css";
 
@@ -46,8 +47,11 @@ export default function App() {
   const [laptopIp, setLaptopIp] = useState("127.0.0.1");
   const [gatewayIp, setGatewayIp] = useState("");
   const [phoneDeviceName, setPhoneDeviceName] = useState("Android Device");
+  const [uploadStatus, setUploadStatus] = useState<string>("");
+  const [isRinging, setIsRinging] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const wsUrl = `ws://${window.location.hostname || "localhost"}:8702`;
@@ -83,6 +87,9 @@ export default function App() {
             time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           };
           setNotifications((prev) => [item, ...prev.slice(0, 49)]);
+        } else if (msg.type === "androlink:file_received") {
+          setUploadStatus(`Received ${msg.data.filename} in Downloads!`);
+          setTimeout(() => setUploadStatus(""), 4000);
         }
       } catch (e) {
         console.error("WS error:", e);
@@ -117,6 +124,39 @@ export default function App() {
     navigator.clipboard.writeText(lastClipboard);
     setCopiedSuccess(true);
     setTimeout(() => setCopiedSuccess(false), 2000);
+  };
+
+  const handleRingPhone = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "ring_phone" }));
+      setIsRinging(true);
+      setTimeout(() => setIsRinging(false), 5000);
+    }
+  };
+
+  const handleFileUpload = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    setUploadStatus(`Beaming ${file.name} to phone...`);
+    try {
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: {
+          "x-filename": encodeURIComponent(file.name),
+          "x-source": "pc",
+        },
+        body: file,
+      });
+      if (res.ok) {
+        setUploadStatus(`Sent ${file.name} to phone!`);
+        setTimeout(() => setUploadStatus(""), 3000);
+      } else {
+        setUploadStatus("File upload failed.");
+      }
+    } catch (err) {
+      console.error(err);
+      setUploadStatus("Error sending file.");
+    }
   };
 
   const dismissNotification = (key: string) => {
@@ -237,6 +277,22 @@ export default function App() {
           </div>
         </header>
 
+        {uploadStatus && (
+          <div
+            style={{
+              padding: "10px 18px",
+              borderRadius: 12,
+              background: "rgba(99, 102, 241, 0.15)",
+              border: "1px solid rgba(99, 102, 241, 0.3)",
+              color: "#a5b4fc",
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            {uploadStatus}
+          </div>
+        )}
+
         {activeTab === "dashboard" && (
           <div className="dashboard-grid">
             {/* Clipboard Preview */}
@@ -278,23 +334,37 @@ export default function App() {
               <div className="panel-header">
                 <div className="panel-title-group">
                   <Layers size={18} color="#06b6d4" />
-                  <span>Quick Features</span>
+                  <span>Quick Tools</span>
                 </div>
-                <span className="panel-badge">Ready</span>
+                <span className="panel-badge">KDE Style</span>
               </div>
 
               <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5 }}>
-                Stream media controls, remote mouse trackpad, and notifications directly over your local Wi-Fi.
+                Directly ring your phone, trigger screen mirror, or beam quick files.
               </p>
 
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: "auto" }}>
-                <button className="action-btn-secondary" style={{ justifyContent: "flex-start" }}>
-                  <MonitorPlay size={16} color="#6366f1" />
-                  <span>Launch Screen Mirroring</span>
+                <button
+                  className="action-btn-secondary"
+                  style={{ justifyContent: "flex-start" }}
+                  onClick={handleRingPhone}
+                >
+                  <Volume2 size={16} color={isRinging ? "#34d399" : "#f59e0b"} />
+                  <span>{isRinging ? "Ringing Phone..." : "Find / Ring Phone"}</span>
                 </button>
+
+                <button
+                  className="action-btn-secondary"
+                  style={{ justifyContent: "flex-start" }}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload size={16} color="#6366f1" />
+                  <span>Send File to Phone</span>
+                </button>
+
                 <button className="action-btn-secondary" style={{ justifyContent: "flex-start" }}>
-                  <Music size={16} color="#06b6d4" />
-                  <span>Media Controls</span>
+                  <MonitorPlay size={16} color="#06b6d4" />
+                  <span>Screen Mirroring</span>
                 </button>
               </div>
             </div>
@@ -453,7 +523,20 @@ export default function App() {
               </div>
             </div>
 
+            <input
+              type="file"
+              ref={fileInputRef}
+              style={{ display: "none" }}
+              onChange={(e) => handleFileUpload(e.target.files)}
+            />
+
             <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                handleFileUpload(e.dataTransfer.files);
+              }}
+              onClick={() => fileInputRef.current?.click()}
               style={{
                 border: "2px dashed var(--border-light)",
                 borderRadius: 18,
@@ -474,7 +557,7 @@ export default function App() {
               <div style={{ textAlign: "center" }}>
                 <div style={{ fontSize: 16, fontWeight: 700 }}>Drag and drop files to beam to your phone</div>
                 <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
-                  Files transfer over high-speed local TCP directly to your phone's Downloads directory
+                  Files transfer over high-speed local Wi-Fi directly to your phone's Downloads directory
                 </div>
               </div>
               <button className="action-btn-secondary" style={{ marginTop: 8 }}>

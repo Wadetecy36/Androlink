@@ -10,12 +10,16 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Environment
 import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.FileProvider
 import com.androlink.app.MainActivity
 import com.androlink.app.model.AndrolinkPacket
 import com.androlink.app.network.TcpClient
@@ -27,13 +31,20 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.net.URL
 
 class AndrolinkForegroundService : Service() {
     private val TAG = "AndrolinkService"
     private val CHANNEL_ID = "androlink_service_channel"
     private val NOTIFICATION_ID = 1001
+    private val ACTION_STOP_RINGING = "com.androlink.app.STOP_RINGING"
+    private val ACTION_COPY_CLIPBOARD = "com.androlink.app.COPY_CLIPBOARD"
+
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     private var udpDiscovery: UdpDiscovery? = null
@@ -41,6 +52,7 @@ class AndrolinkForegroundService : Service() {
     private var clipboardManager: ClipboardManager? = null
     private var lastSentClipboard = ""
     private var deviceId = ""
+    private var ringtone: Ringtone? = null
 
     companion object {
         var isRunning = false
@@ -79,6 +91,7 @@ class AndrolinkForegroundService : Service() {
         setupClipboardListener()
         setupBatteryReceiver()
         setupNotificationListenerCallback()
+        setupCommandReceiver()
         startDiscovery()
     }
 
@@ -95,6 +108,35 @@ class AndrolinkForegroundService : Service() {
                 Log.e(TAG, "Direct connect failed to $ip", e)
                 updateNotification("Connection to $ip failed. Searching...")
             }
+        }
+    }
+
+    fun pingLaptop() {
+        scope.launch {
+            tcpClient?.sendPacket(
+                AndrolinkPacket(
+                    channel = "system",
+                    event = "ping",
+                    data = JsonObject()
+                )
+            )
+        }
+    }
+
+    fun pushClipboardToLaptop(text: String) {
+        lastSentClipboard = text
+        scope.launch {
+            val data = JsonObject().apply {
+                addProperty("mimeType", "text/plain")
+                addProperty("content", text)
+            }
+            tcpClient?.sendPacket(
+                AndrolinkPacket(
+                    channel = "clipboard",
+                    event = "sync",
+                    data = data
+                )
+            )
         }
     }
 
@@ -127,7 +169,7 @@ class AndrolinkForegroundService : Service() {
             udpDiscovery?.startListening()
         }
 
-        // Periodically broadcast presence & try saved IP if not connected
+        // Periodically broadcast presence & retry saved IP
         scope.launch {
             val prefs = getSharedPreferences("androlink_prefs", Context.MODE_PRIVATE)
             var attempts = 0
@@ -138,7 +180,6 @@ class AndrolinkForegroundService : Service() {
 
                     attempts++
                     if (attempts % 4 == 0 && !savedIp.isNullOrBlank()) {
-                        // Attempt proactive TCP connection to last saved IP in case hotspot drops UDP
                         try {
                             val addr = InetAddress.getByName(savedIp)
                             connectToDesktop(addr, 8700)
@@ -161,20 +202,7 @@ class AndrolinkForegroundService : Service() {
             if (clip != null && clip.itemCount > 0) {
                 val text = clip.getItemAt(0).text?.toString() ?: ""
                 if (text.isNotBlank() && text != lastSentClipboard) {
-                    lastSentClipboard = text
-                    scope.launch {
-                        val data = JsonObject().apply {
-                            addProperty("mimeType", "text/plain")
-                            addProperty("content", text)
-                        }
-                        tcpClient?.sendPacket(
-                            AndrolinkPacket(
-                                channel = "clipboard",
-                                event = "sync",
-                                data = data
-                            )
-                        )
-                    }
+                    pushClipboardToLaptop(text)
                 }
             }
         }
@@ -235,34 +263,168 @@ class AndrolinkForegroundService : Service() {
         }
     }
 
+    private fun setupCommandReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(ACTION_STOP_RINGING)
+            addAction(ACTION_COPY_CLIPBOARD)
+        }
+        registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    ACTION_STOP_RINGING -> stopRinging()
+                    ACTION_COPY_CLIPBOARD -> {
+                        val text = intent.getStringExtra("clip_text") ?: return
+                        val clip = ClipData.newPlainText("Androlink", text)
+                        clipboardManager?.setPrimaryClip(clip)
+                        val manager = getSystemService(NotificationManager::class.java)
+                        manager?.cancel(1004)
+                    }
+                }
+            }
+        }, filter)
+    }
+
     private fun handleIncomingPacket(packet: AndrolinkPacket) {
         when (packet.channel) {
             "clipboard" -> {
                 if (packet.event == "sync") {
                     val content = packet.data.get("content")?.asString ?: ""
-                    if (content.isNotBlank() && content != lastSentClipboard) {
+                    if (content.isNotBlank()) {
                         lastSentClipboard = content
                         scope.launch(Dispatchers.Main) {
-                            val clip = ClipData.newPlainText("Androlink", content)
-                            clipboardManager?.setPrimaryClip(clip)
+                            try {
+                                val clip = ClipData.newPlainText("Androlink", content)
+                                clipboardManager?.setPrimaryClip(clip)
+                            } catch (_: Exception) {}
+                            showClipboardReceivedNotification(content)
                         }
                     }
                 }
             }
+            "file" -> {
+                if (packet.event == "offer") {
+                    val fileName = packet.data.get("fileName")?.asString ?: "downloaded_file"
+                    val downloadUrl = packet.data.get("downloadUrl")?.asString ?: ""
+                    if (downloadUrl.isNotBlank()) {
+                        downloadFileFromPc(downloadUrl, fileName)
+                    }
+                }
+            }
             "system" -> {
-                if (packet.event == "ping") {
-                    scope.launch {
-                        tcpClient?.sendPacket(
-                            AndrolinkPacket(
-                                channel = "system",
-                                event = "pong",
-                                data = JsonObject()
-                            )
-                        )
+                if (packet.event == "ring") {
+                    scope.launch(Dispatchers.Main) {
+                        startRinging()
                     }
                 }
             }
         }
+    }
+
+    private fun startRinging() {
+        try {
+            stopRinging()
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ringtone = RingtoneManager.getRingtone(applicationContext, uri)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                ringtone?.isLooping = true
+            }
+            ringtone?.play()
+
+            val stopIntent = Intent(ACTION_STOP_RINGING)
+            val pendingStop = PendingIntent.getBroadcast(
+                this,
+                1002,
+                stopIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Androlink: Ringing Phone 🔔")
+                .setContentText("Your laptop is searching for this device.")
+                .setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .addAction(android.R.drawable.ic_delete, "Stop Ringing", pendingStop)
+                .setOngoing(true)
+                .build()
+
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.notify(1003, notif)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error playing ringtone", e)
+        }
+    }
+
+    fun stopRinging() {
+        try {
+            ringtone?.stop()
+            ringtone = null
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.cancel(1003)
+        } catch (_: Exception) {}
+    }
+
+    private fun showClipboardReceivedNotification(text: String) {
+        val copyIntent = Intent(ACTION_COPY_CLIPBOARD).apply {
+            putExtra("clip_text", text)
+        }
+        val pendingCopy = PendingIntent.getBroadcast(
+            this,
+            1004,
+            copyIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val snippet = if (text.length > 50) text.substring(0, 47) + "..." else text
+        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Text Received from PC 📋")
+            .setContentText(snippet)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .addAction(android.R.drawable.ic_input_get, "Copy to Clipboard", pendingCopy)
+            .setAutoCancel(true)
+            .build()
+
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.notify(1004, notif)
+    }
+
+    private fun downloadFileFromPc(urlStr: String, fileName: String) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                val destFile = File(downloadsDir, fileName)
+
+                val url = URL(urlStr)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 10000
+                conn.readTimeout = 30000
+                conn.connect()
+
+                if (conn.responseCode == HttpURLConnection.HTTP_OK) {
+                    conn.inputStream.use { input ->
+                        FileOutputStream(destFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    showFileDownloadedNotification(destFile)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed downloading file from PC", e)
+            }
+        }
+    }
+
+    private fun showFileDownloadedNotification(file: File) {
+        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("File Received from PC 📁")
+            .setContentText("${file.name} saved to Downloads")
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setAutoCancel(true)
+            .build()
+
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.notify(1005, notif)
     }
 
     private fun createNotificationChannel() {
@@ -270,7 +432,7 @@ class AndrolinkForegroundService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Androlink Service",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Keeps Androlink connected with your PC"
             }
@@ -302,6 +464,7 @@ class AndrolinkForegroundService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopRinging()
         serviceInstance = null
         isRunning = false
         isConnected = false
